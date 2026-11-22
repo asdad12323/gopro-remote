@@ -1,29 +1,46 @@
 package com.exemplo.goprodualremote
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
 import androidx.media3.exoplayer.ExoPlayer
-import java.net.HttpURLConnection
-import java.net.URL
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 
-class Preview(ctx: Context, private val port: Int) {
+class Preview(ctx: Context) {
     val player: ExoPlayer = ExoPlayer.Builder(ctx).build()
+    @Volatile private var alive = false
 
-    // A câmara tem de estar alcançável em "ip" (Wi-Fi da GoPro ou rede comum).
-    fun start(ip: String) {
+    fun start(api: Hero4Api) {
+        alive = true
         Thread {
-            try {
-                val u = URL("http://$ip:8080/gopro/camera/stream/start?port=$port")
-                (u.openConnection() as HttpURLConnection).apply { connectTimeout = 4000; readTimeout = 4000 }.inputStream.close()
-            } catch (_: Exception) {}
+            api.get("/gp/gpControl/execute?p1=gpStream&c1=restart")
+            Thread.sleep(1500)
+            Handler(Looper.getMainLooper()).post {
+                player.setMediaItem(MediaItem.fromUri("http://10.5.5.9:8080/live/amba.m3u8"))
+                player.prepare(); player.playWhenReady = true
+            }
+            // A HERO4 corta o stream se não receber este pacote de "estou aqui"
+            val s = DatagramSocket()
+            val d = "_GPHD_:0:0:2:0.000000\n".toByteArray()
+            val a = InetAddress.getByName("10.5.5.9")
+            while (alive) {
+                try { s.send(DatagramPacket(d, d.size, a, 8554)) } catch (_: Exception) {}
+                Thread.sleep(2500)
+            }
+            s.close()
         }.start()
-        player.setMediaItem(MediaItem.Builder().setUri("udp://@:$port").setMimeType(MimeTypes.VIDEO_MP2T).build())
-        player.prepare(); player.playWhenReady = true
     }
 
-    fun stop(ip: String) {
-        player.stop()
-        Thread { try { (URL("http://$ip:8080/gopro/camera/stream/stop").openConnection() as HttpURLConnection).inputStream.close() } catch (_: Exception) {} }.start()
+    fun stopLocal() {
+        alive = false
+        Handler(Looper.getMainLooper()).post { player.stop() }
+    }
+
+    fun stop(api: Hero4Api) {
+        stopLocal()
+        Thread { api.get("/gp/gpControl/execute?p1=gpStream&c1=stop") }.start()
     }
 }
